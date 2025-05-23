@@ -172,3 +172,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+mistral-7b-instruct-v0.1.Q4_0.gguf
+serviceAccountKey.json
+.DS_Store

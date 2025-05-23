@@ -8,6 +8,18 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler  # Scheduler for per
 from dotenv import load_dotenv  # For loading environment variables from .env
 import firebase_admin  # Firebase SDK
 from firebase_admin import credentials, firestore  # For auth and database access
+from llama_cpp import Llama
+
+# Set your local model path here
+MODEL_PATH = "./mistral-7b-instruct-v0.1.Q4_0.gguf"
+
+# Initialize the model only once (use caching if needed)
+llm = Llama(
+    model_path=MODEL_PATH,
+    n_ctx=2048,             # Default context size
+    n_threads=4,            # Tune based on your Mac's CPU cores
+    use_mlock=True          # Pin model in memory (optional, improves performance)
+)
 
 # Load environment variables from .env file (e.g., DISCORD_BOT_TOKEN)
 load_dotenv()
@@ -26,6 +38,22 @@ bot = commands.Bot(command_prefix='/', intents=intents)  # Define bot with '/' a
 # Initialize scheduler to run background tasks (like daily streak checks)
 scheduler = AsyncIOScheduler()
 
+
+def get_motivation(user_log_minutes: int) -> str:
+    
+    prompt = f"""<s>[INST] You are a friendly, supportive fitness coach.
+    The user just completed a workout of {user_log_minutes} minutes.
+    Give them a short, energetic motivational message. [/INST]"""
+
+    response = llm(
+        prompt,
+        max_tokens=100,
+        stop=["</s>"]
+    )
+    
+    # Extract the model’s reply from the structured response
+    return response["choices"][0]["text"].strip() # type: ignore
+
 # Define a command `/log <minutes>` that users can call to log workout time
 @bot.command()
 async def log(ctx, minutes: int):
@@ -36,8 +64,11 @@ async def log(ctx, minutes: int):
     # Merge the new log entry into the user's document in Firestore
     db.collection("logs").document(uid).set(entry, merge=True)
 
+    # Get motivational message from LLM
+    motivation = get_motivation(minutes)
+
     # Acknowledge logging to the user
-    await ctx.send(f"✅ {ctx.author.mention}, logged *{minutes} min* for today!")
+    await ctx.send(f"✅ {ctx.author.mention}, logged *{minutes} min* for today! \n\n{motivation}")
 
 # Function to check all users' streaks and send DMs if they’re on a streak
 async def check_streaks():
