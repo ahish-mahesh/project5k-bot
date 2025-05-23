@@ -9,16 +9,21 @@ from dotenv import load_dotenv  # For loading environment variables from .env
 import firebase_admin  # Firebase SDK
 from firebase_admin import credentials, firestore  # For auth and database access
 from llama_cpp import Llama
+from discord import app_commands  # For slash commands and autocomplete
 
-# Set your local model path here
-MODEL_PATH = "./mistral-7b-instruct-v0.1.Q4_0.gguf"
+# Set your local model path here (TinyLlama, optimized for Apple Silicon)
+MODEL_PATH = "./tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
 
 # Initialize the model only once (use caching if needed)
 llm = Llama(
     model_path=MODEL_PATH,
     n_ctx=2048,             # Default context size
     n_threads=4,            # Tune based on your Mac's CPU cores
-    use_mlock=True          # Pin model in memory (optional, improves performance)
+    use_mlock=True,         # Pin model in memory (optional, improves performance)
+    # Enable Metal backend for Apple Silicon (M1/M2/M3) for maximum performance
+    # llama.cpp will auto-detect Metal if built with Metal support
+    # If you want to force Metal: set 'backend' if your llama-cpp-python version supports it
+    backend="metal"  # Uncomment if your llama-cpp-python supports this argument
 )
 
 # Load environment variables from .env file (e.g., DISCORD_BOT_TOKEN)
@@ -54,21 +59,75 @@ def get_motivation(user_log_minutes: int) -> str:
     # Extract the model’s reply from the structured response
     return response["choices"][0]["text"].strip() # type: ignore
 
-# Define a command `/log <minutes>` that users can call to log workout time
-@bot.command()
-async def log(ctx, minutes: int):
-    uid = str(ctx.author.id)  # Use Discord user ID as key
-    today = datetime.date.today().isoformat()  # Get today’s date in YYYY-MM-DD format
-    entry = {today: minutes}  # Create log entry for today
+# --- Autocomplete helpers ---
+COMMON_MINUTES = [15, 20, 30, 45, 60, 90, 120]
+EXAMPLE_PROMPTS = [
+    "Give me a workout tip",
+    "How do I stay motivated?",
+    "Suggest a 30-minute workout",
+    "What's a good post-workout meal?",
+    "How do I recover from muscle soreness?"
+]
 
-    # Merge the new log entry into the user's document in Firestore
+async def get_minutes_autocomplete(interaction: discord.Interaction, current: str):
+    """Suggest common workout durations for /log command autocomplete."""
+    return [
+        app_commands.Choice(name=f"{m} minutes", value=m)
+        for m in COMMON_MINUTES if current in str(m)
+    ][:5]
+
+async def get_prompt_autocomplete(interaction: discord.Interaction, current: str):
+    """Suggest example prompts for /ask command autocomplete."""
+    return [
+        app_commands.Choice(name=prompt, value=prompt)
+        for prompt in EXAMPLE_PROMPTS if current.lower() in prompt.lower()
+    ][:5]
+
+# --- Slash command definitions ---
+
+# Remove old @bot.command() versions to avoid duplicate commands
+
+@bot.tree.command(name="log", description="Log your workout time in minutes.")
+@app_commands.describe(minutes="Number of minutes you worked out today.")
+@app_commands.autocomplete(minutes=get_minutes_autocomplete)
+async def log(interaction: discord.Interaction, minutes: int):
+    """
+    Slash command to log workout minutes for the current user.
+    Provides autocomplete for common durations.
+    Uses deferred response to avoid Discord timeout.
+    Echoes the user's request in the bot's response for chat visibility.
+    """
+    await interaction.response.defer()  # Defer response to prevent timeout
+    uid = str(interaction.user.id)
+    today = datetime.date.today().isoformat()
+    entry = {today: minutes}
     db.collection("logs").document(uid).set(entry, merge=True)
-
-    # Get motivational message from LLM
     motivation = get_motivation(minutes)
+    await interaction.followup.send(
+        f"{interaction.user.mention} logged `/log {minutes}`\n\n✅ *{minutes} min* for today!\n{motivation}"
+    )
 
-    # Acknowledge logging to the user
-    await ctx.send(f"✅ {ctx.author.mention}, logged *{minutes} min* for today! \n\n{motivation}")
+@bot.tree.command(name="ask", description="Ask the LLM a question or for motivation.")
+@app_commands.describe(prompt="Your question or prompt for the LLM.")
+@app_commands.autocomplete(prompt=get_prompt_autocomplete)
+async def ask(interaction: discord.Interaction, prompt: str):
+    """
+    Slash command to ask the local LLM a question or for motivation.
+    Provides autocomplete for example prompts.
+    Uses deferred response to avoid Discord timeout.
+    Echoes the user's request in the bot's response for chat visibility.
+    """
+    await interaction.response.defer()  # Defer response to prevent timeout
+    llm_prompt = f"<s>[INST] You are a friendly, supportive fitness coach. {prompt} [/INST]"
+    response = llm(
+        llm_prompt,
+        max_tokens=200,
+        stop=["</s>"]
+    )
+    reply = response["choices"][0]["text"].strip()  # type: ignore
+    await interaction.followup.send(
+        f"**{interaction.user.mention} asked:** `{prompt}`\n💡 {reply}"
+    )
 
 # Function to check all users' streaks and send DMs if they’re on a streak
 async def check_streaks():
@@ -97,9 +156,13 @@ async def check_streaks():
                 except:
                     print(f"Could not DM user {user_id}")  # Handle users with DMs disabled
 
-# Event that triggers when the bot has connected to Discords
+# --- IMPORTANT: Sync slash commands on startup ---
 @bot.event
 async def on_ready():
+    """
+    Event handler for when the bot is ready. Syncs slash commands with Discord.
+    """
+    await bot.tree.sync()
     print(f'✅ Bot is online as {bot.user}')
 
 # Main async function to start the scheduler and bot
