@@ -82,10 +82,6 @@ def parse_workout_plan(plan_text: str):
     Returns:
         list: A list of tuples (day, workout description) for calendar integration
     """
-    # Remove anything before the first 'Monday:'
-    monday_idx = plan_text.find("Monday:")
-    if monday_idx != -1:
-        plan_text = plan_text[monday_idx:]
 
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     events = []
@@ -155,7 +151,7 @@ def get_motivation(user_log_minutes: int) -> str:
     prompt = f"""<s>[INST] You are a friendly, supportive fitness coach.\nThe user just completed a workout of {user_log_minutes} minutes.\nGive them a short, energetic motivational message. [/INST]"""
     response = llm(
         prompt,
-        max_tokens=100,
+        max_tokens=2000,
         stop=["</s>"]
     )
     return response["choices"][0]["text"].strip()  # type: ignore
@@ -195,10 +191,10 @@ async def ask(interaction: discord.Interaction, prompt: str):
     Echoes the user's request in the bot's response for chat visibility.
     """
     await interaction.response.defer()  # Defer response to prevent timeout
-    llm_prompt = f"<s>[INST] You are a friendly, supportive fitness coach. {prompt} [/INST]"
+    llm_prompt = f"[INST] You are a friendly, supportive fitness coach. {prompt} [/INST]"
     response = llm(
         llm_prompt,
-        max_tokens=200,
+        max_tokens=2000,
         stop=["</s>"]
     )
     reply = response["choices"][0]["text"].strip()  # type: ignore
@@ -260,9 +256,10 @@ async def plan(interaction: discord.Interaction, goal: str):
     
     print("Response from LLM: ", response)
     
-    # Clean up the response by removing the "Response: " prefix if present
-    if response.startswith(" Response: "):
-        response = response[len(" Response: "):]
+    # Remove anything before the first 'Monday:'
+    monday_idx = response.find("Monday:")
+    if monday_idx != -1:
+        plan_text = response[monday_idx:]
     
     await interaction.followup.send(
         f"Here is your weekly workout plan for **{goal}**:\n```\n{response}\n```\n\nIf you want to add this plan to your Google Calendar, reply with `/confirmplan` in the next 2 minutes.\n\n**Example prompts for /plan:**\n- strength training\n- yoga\n- 5k run\n- full body\n- weight loss\n- flexibility\n- HIIT\n- upper body\n- lower body\n- muscle gain\n- cardio"
