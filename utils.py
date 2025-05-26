@@ -9,39 +9,15 @@ from firebase_admin import credentials, firestore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import discord
 from discord.ext import commands
-from llama_cpp import Llama
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-from llama_log_redirect import llama_log_redirect
+import google.generativeai as genai
 
-# Set your local model path here (Phi-3 Mini, optimized for Apple Silicon or CPU)
-MODEL_PATH = "./phi-2.Q4_K_M.gguf"
-
-# Initialize the model only once (use caching if needed)
-llm = None
-try:
-    with llama_log_redirect("logs/utils_llm.log"):
-        llm = Llama(
-            model_path=MODEL_PATH,
-            n_ctx=1024,  # Balanced context size for Phi-3 Mini
-            n_threads=os.cpu_count() or 8,
-            use_mlock=True,
-            backend="cpu"  # Use "cpu" if you have issues with Metal
-        )
-except Exception as e:
-    import traceback
-    error_log_path = "logs/utils_llm_error.log"
-    with open(error_log_path, "a") as f:
-        f.write(f"\n[ERROR] {datetime.datetime.now()}\n")
-        f.write(f"Exception: {e}\n")
-        f.write(traceback.format_exc())
-        f.write("\n---\n")
-    print(f"[LLM ERROR] Exception occurred during model load. Details written to {error_log_path}")
-    llm = None
-
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
-GOOGLE_CREDENTIALS_FILE = "./google_api_credentials.json"
+genai_api_key = "AIzaSyCySj5-EmbxCfKl2JdvPlWS3cAoXRf0bbY"#os.getenv("GEMINI_API_KEY")
+USE_GEMINI = bool(genai_api_key)
+if USE_GEMINI:
+    genai.configure(api_key=genai_api_key) # type: ignore
 
 # Firebase and Firestore initialization
 cred = credentials.Certificate("serviceAccountKey.json")
@@ -50,6 +26,9 @@ db = firestore.client()
 
 # Scheduler initialization (for streaks)
 scheduler = AsyncIOScheduler()
+
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+GOOGLE_CREDENTIALS_FILE = "./google_api_credentials.json"
 
 async def get_calendar_service(user_id: str, interaction=None):
     creds = None
@@ -131,42 +110,66 @@ def parse_workout_plan(plan_text: str):
         events.append((day, workout))
     return events
 
-def get_llm_response(prompt, max_tokens=2000, stop=None):
+def sanitize_llm_output(text: str, max_length: int = 2000) -> str:
     """
-    Helper to get LLM response and handle both streaming and non-streaming outputs.
-    Adds extra logging to catch silent errors.
+    Sanitize Gemini output for Discord:
+    - Truncate to Discord's 2000 char limit
+    - Remove accidental code blocks (triple backticks)
+    - Replace blank/empty output with fallback error
+    - Strip leading/trailing whitespace
     """
-    import traceback
-    if llm is None:
-        error_log_path = "logs/utils_llm_error.log"
-        with open(error_log_path, "a") as f:
-            f.write(f"\n[ERROR] {datetime.datetime.now()}\n")
-            f.write(f"Prompt: {prompt}\n")
-            f.write(f"Exception: LLM model is not loaded.\n")
-            f.write("\n---\n")
-        print(f"[LLM ERROR] LLM model is not loaded. Details written to {error_log_path}")
-        return "[LLM ERROR] Sorry, the language model is not available. Please try again later."
+    if not text or not isinstance(text, str) or not text.strip():
+        return "[LLM ERROR] Sorry, the response was empty. Please try again."
+    sanitized = text.strip()
+    # Remove leading/trailing triple backticks
+    if sanitized.startswith("```") and sanitized.endswith("```"):
+        sanitized = sanitized[3:-3].strip()
+    # Remove any lone triple backticks inside
+    sanitized = sanitized.replace("```", "\u200b")
+    # Truncate to Discord's max message length
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length-3] + "..."
+    if not sanitized:
+        return "[LLM ERROR] Sorry, the response was empty. Please try again."
+    return sanitized
+
+def gemini_generate(prompt, max_tokens=512):
+    """Call Gemini API synchronously using gemini-2.0-flash (latest official API)."""
     try:
-        with llama_log_redirect("logs/utils_llm.log"):
-            response = llm(
-                prompt,
-                max_tokens=max_tokens,
-                stop=stop or ["</s>"]
-            )
-        # If response is a generator/iterator, get the first item
-        if hasattr(response, '__iter__') and not isinstance(response, dict):
-            response = next(iter(response))
-        return response["choices"][0]["text"].strip() # type: ignore
+        model = genai.GenerativeModel('gemini-2.0-flash') # type: ignore
+        response = model.generate_content(prompt, generation_config={"max_output_tokens": max_tokens})
+        print(f"[GEMINI] Generated response for prompt: {prompt[:50]}... (max_tokens={max_tokens})")
+        if not response or not response.text:
+            print("[GEMINI] No response text generated.")
+            return "[LLM ERROR] Sorry, there was a problem generating a response. Please try again later."
+        return sanitize_llm_output(response.text)
     except Exception as e:
         error_log_path = "logs/utils_llm_error.log"
+        import traceback
         with open(error_log_path, "a") as f:
             f.write(f"\n[ERROR] {datetime.datetime.now()}\n")
             f.write(f"Prompt: {prompt}\n")
             f.write(f"Exception: {e}\n")
             f.write(traceback.format_exc())
             f.write("\n---\n")
-        print(f"[LLM ERROR] Exception occurred. Details written to {error_log_path}")
+        print(f"[GEMINI ERROR] Exception occurred. Details written to {error_log_path}")
         return "[LLM ERROR] Sorry, there was a problem generating a response. Please try again later."
+
+async def call_gemini_async(prompt, max_tokens=512):
+    """
+    Asynchronously call Gemini API in a thread to avoid blocking the event loop.
+    Uses asyncio.to_thread for robust async execution.
+    """
+    return await asyncio.to_thread(gemini_generate, prompt, max_tokens)
+
+def get_llm_response(prompt, max_tokens=2000, stop=None):
+    """
+    Helper to get LLM response using Gemini API only.
+    """
+    import traceback
+    if not USE_GEMINI:
+        return "[LLM ERROR] Gemini API key not set. Please set GEMINI_API_KEY in your environment."
+    return gemini_generate(prompt, max_tokens=max_tokens)
 
 # Update get_motivation to use get_llm_response
 
