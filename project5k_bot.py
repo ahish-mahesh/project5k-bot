@@ -24,7 +24,9 @@ from utils import (
     check_streaks,
     db,
     scheduler,
-    llm
+    get_llm_response,
+    gemini_generate,
+    call_gemini_async
 )
 import concurrent.futures
 
@@ -48,21 +50,6 @@ scheduler = AsyncIOScheduler()
 # Google Calendar API setup
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 GOOGLE_CREDENTIALS_FILE = "./google_api_credentials.json"  # Your OAuth2 credentials file
-
-# Use a thread pool executor for LLM calls
-llm_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-
-async def call_llm_async(prompt, max_tokens=20000, stop=None, top_p=0.95):
-    loop = asyncio.get_event_loop()
-    def llm_call():
-        # Only pass supported parameters to llm() call
-        return llm(
-            prompt,
-            max_tokens=max_tokens,
-            top_p=top_p,
-            stop=stop or ["</s>"]
-        )
-    return await loop.run_in_executor(llm_executor, llm_call)
 
 # --- Autocomplete helpers ---
 # Common workout durations and example prompts for autocomplete in discord slash commands
@@ -147,37 +134,34 @@ async def log(interaction: discord.Interaction, minutes: int):
 @app_commands.autocomplete(prompt=get_prompt_autocomplete)
 async def ask(interaction: discord.Interaction, prompt: str):
     """
-    Slash command to ask the local LLM a question or for motivation.
+    Slash command to ask the LLM a question or for motivation.
     Provides autocomplete for example prompts.
     Uses deferred response to avoid Discord timeout.
     Echoes the user's request in the bot's response for chat visibility.
     """
     await interaction.response.defer()  # Defer response to prevent timeout
     print(f"executing /ask with {interaction.user}: {prompt}")
-    llm_prompt = f"[INST] You are a friendly, supportive fitness coach. {prompt} [/INST]"
+    prompt = f"<s>[INST] You are a friendly, supportive fitness coach. {prompt} [/INST]"
     import traceback
     try:
         with llama_log_redirect("logs/project5k_bot_llm.log"):
-            if llm is None:
-                raise RuntimeError("LLM model failed to load.")
-            response = await call_llm_async(
-                llm_prompt,
-                max_tokens=512,  # Balanced for speed/quality
-                stop=["</s>"]
+            output = await call_gemini_async(
+                prompt,
+                max_tokens=768,  # Slightly higher for plan
             )
-        reply = response["choices"][0]["text"].strip()  # type: ignore
+        response = output
     except Exception as e:
         error_log_path = "logs/project5k_bot_llm_error.log"
         with open(error_log_path, "a") as f:
             f.write(f"\n[ERROR] {datetime.datetime.now()}\n")
-            f.write(f"Prompt: {llm_prompt}\n")
+            f.write(f"Prompt: {prompt}\n")
             f.write(f"Exception: {e}\n")
             f.write(traceback.format_exc())
             f.write("\n---\n")
         print(f"[LLM ERROR] Exception occurred in /ask. Details written to {error_log_path}")
-        reply = "[LLM ERROR] Sorry, there was a problem generating a response. Please try again later."
+        response = "[LLM ERROR] Sorry, there was a problem generating a response. Please try again later."
     await interaction.followup.send(
-        f"**{interaction.user.mention} asked:** `{prompt}`\n💡 {reply}"
+        f"**{interaction.user.mention} asked:** `{prompt}`\n💡 {response}"
     )
 
 # Global in-memory store for pending plans (user_id -> {plan_text, timestamp})
@@ -203,15 +187,11 @@ async def plan(interaction: discord.Interaction, goal: str):
     import traceback
     try:
         with llama_log_redirect("logs/project5k_bot_llm.log"):
-            if llm is None:
-                raise RuntimeError("LLM model failed to load.")
-            output = await call_llm_async(
+            output = await call_gemini_async(
                 prompt,
                 max_tokens=768,  # Slightly higher for plan
-                stop=["<s>"],
-                top_p=0.95
             )
-        response = output["choices"][0]["text"] # type: ignore
+        response = output
     except Exception as e:
         error_log_path = "logs/project5k_bot_llm_error.log"
         with open(error_log_path, "a") as f:
@@ -356,21 +336,26 @@ async def llm_onboarding_loop(member: discord.User | discord.Member, bot: comman
         # Build LLM prompt with conversation so far
         if conversation:
             history = "\n".join([f"Q{i+1}: {q}\nA{i+1}: {a}" for i, (q, a) in enumerate(conversation)])
+            onboarding_prompt = (
+                f"[INST] You are onboarding a fitness client. Here is the conversation so far:\n"
+                f"{history}\n"
+                "If you have enough information to draft a personalized weekly workout plan, reply with ONLY 'DONE'. "
+                "Otherwise, reply with the next best question to ask. [/INST]"
+            )
         else:
-            history = ""
-        onboarding_prompt = (
-            f"[INST] You are onboarding a fitness client. Here is the conversation so far:\n"
-            f"{history}\n"
-            "If you have enough information to draft a personalized weekly workout plan, reply with ONLY 'DONE'. "
-            "Otherwise, reply with the next best question to ask. [/INST]"
-        )
+            history = ""    
+            onboarding_prompt = (
+                f"[INST] You are onboarding a fitness client. I want you to ask them questions to gather information about their fitness journey.\n"
+                "If you have enough information to draft a personalized weekly workout plan, reply with ONLY 'DONE'. "
+                "Otherwise, reply with the next best question to ask. [/INST]"
+            )
         # Get next question or 'DONE' from LLM
         try:
             with llama_log_redirect("logs/project5k_bot_llm.log"):
-                llm_response = await call_llm_async(onboarding_prompt, max_tokens=128, stop=["</s>"])
+                llm_response = await call_gemini_async(onboarding_prompt, max_tokens=128) # type: ignore
             # Handle LLM response format (dict with 'choices' list)
             if isinstance(llm_response, dict) and "choices" in llm_response:
-                next_q = llm_response["choices"][0]["text"].strip()
+                next_q = llm_response
             else:
                 next_q = str(llm_response).strip()
         except Exception as e:
@@ -399,11 +384,8 @@ async def llm_onboarding_loop(member: discord.User | discord.Member, bot: comman
     )
     try:
         with llama_log_redirect("logs/project5k_bot_llm.log"):
-            plan_response = await call_llm_async(plan_prompt, max_tokens=768, stop=["<s>"])
-        if isinstance(plan_response, dict) and "choices" in plan_response:
-            plan_text = plan_response["choices"][0]["text"].strip()
-        else:
-            plan_text = str(plan_response).strip()
+            plan_response = await call_gemini_async(plan_prompt, max_tokens=768)
+        plan_text = plan_response.strip()
     except Exception as e:
         await member.send("[LLM ERROR] Sorry, there was a problem generating your workout plan. Please try again later.")
         return
