@@ -14,7 +14,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import google.generativeai as genai
 
-genai_api_key = "AIzaSyCySj5-EmbxCfKl2JdvPlWS3cAoXRf0bbY"#os.getenv("GEMINI_API_KEY")
+genai_api_key = os.getenv("GEMINI_API_KEY")
 USE_GEMINI = bool(genai_api_key)
 if USE_GEMINI:
     genai.configure(api_key=genai_api_key) # type: ignore
