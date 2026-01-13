@@ -1,4 +1,4 @@
-# 🏋️‍♂️ Project5K — Fitness Accountability Discord Bot
+# Project5K — Fitness Accountability Discord Bot
 
 **Project5K** is a Python-based Discord bot that helps users stay consistent with their fitness goals by:
 
@@ -12,18 +12,18 @@ This project runs fully **locally**, with no external LLM API dependency, and is
 
 ---
 
-## 🚀 Features
+## Features
 
 - `/log <minutes>` – Log your daily workout (with autocomplete for common durations)
 - `/ask <prompt>` – Ask the local LLM for motivation, tips, or any question (with autocomplete for example prompts)
-- 💬 Local TinyLlama LLM generates personalized motivation and answers
-- 🔥 7-day streak tracking with automatic DM alerts
-- 🧠 Firebase Firestore storage for logs
-- 🧩 Easily extendable with leaderboards, summaries, and OpenAI fallback
+-  Local TinyLlama LLM generates personalized motivation and answers
+-  7-day streak tracking with automatic DM alerts
+-  Firebase Firestore storage for logs
+-  Easily extendable with leaderboards, summaries, and OpenAI fallback
 
 ---
 
-## 🧰 Tech Stack
+## Tech Stack
 
 - [Python 3.10+](https://www.python.org/)
 - [discord.py](https://discordpy.readthedocs.io/) (with slash/app commands)
@@ -34,7 +34,7 @@ This project runs fully **locally**, with no external LLM API dependency, and is
 
 ---
 
-## 📦 Setup Instructions
+## Setup Instructions
 
 ### 1. Clone the Repository
 
@@ -134,7 +134,7 @@ The bot will:
 
 ---
 
-## 📁 File Structure
+## File Structure
 
 ```
 project5k-bot/
@@ -148,7 +148,7 @@ project5k-bot/
 
 ---
 
-## 🔐 Security
+## Security
 
 - DO NOT commit `.env` or `serviceAccountKey.json` to GitHub
 - Add them to `.gitignore`
@@ -161,7 +161,7 @@ serviceAccountKey.json
 
 ---
 
-## 🧩 Roadmap
+## Roadmap
 
 - [ ] `/streak` command to view current streak
 - [ ] Weekly progress summaries
@@ -170,7 +170,7 @@ serviceAccountKey.json
 
 ---
 
-## 🧠 Credits
+## Credits
 
 - [discord.py](https://github.com/Rapptz/discord.py)
 - [llama-cpp-python](https://github.com/abetlen/llama-cpp-python)
@@ -179,12 +179,12 @@ serviceAccountKey.json
 
 ---
 
-## 📜 License
+## License
 
 This project is licensed under the MIT License.
 
 ---
 
-## 💬 Questions?
+## Questions?
 
 Feel free to open an issue or reach out via GitHub discussions. Contributions are welcome!
